@@ -14,7 +14,7 @@ from .Packets import GeneralFailure, AuthFailure, EngineFailure, WalletFailure
 
 import playground
 
-from asyncio import get_event_loop, Protocol, Future
+from asyncio import get_event_loop, Protocol, Future, run_coroutine_threadsafe
 import random, logging
 
 logger = logging.getLogger("playground.org,"+__name__)
@@ -173,16 +173,25 @@ class StatelessClient(Protocol):
         
     def sendPaymentRequest(self):
         if self.session.charges > 0:
-            paymentData, message = self.wallet.getPayment(self.session.cookie, self.session.charges)
-            if not paymentData:
-                return self.session.failed(message)
+            coro = self.wallet.getPayment(self.session.cookie, self.session.charges)
+            fut = run_coroutine_threadsafe(coro, get_event_loop())
+            fut.add_done_callback(self.__sendPayment)
         else:
             paymentData = b""
-        
+            fut = Future()
+            fut.set_result((paymentData, None))
+            self.__sendPayment(fut)
+
+    def __sendPayment(self, result):
+        assert(result.exception() is None)
+        paymentData, message = result.result()
+        if not paymentData:
+            return self.session.failed(message)
         self.session.paymentData = paymentData
         request = Payment(Cookie=self.session.cookie,
                           PaymentData=self.session.paymentData)
         self.transport.write(request.__serialize__())
+        print("Client has sent the payment!")
         
     def handlePaymentRequest(self, response):
         if not isinstance(response, PaymentResponse):
