@@ -27,7 +27,6 @@ class IMobileCodeServerWallet:
 
     
 class IMobileCodeClientWallet:
-    def preparePayment(self, cookie, charges): raise NotImplementedError()
     def getPayment(self, cookie, charges): raise NotImplementedError()
 
 #####
@@ -48,11 +47,6 @@ class NullServerWallet(IMobileCodeServerWallet):
 
 
 class NullClientWallet(IMobileCodeClientWallet):
-    def preparePayment(self, cookie, charges):
-        # Null wallet does not make payment
-        debugPrint("NullClientWallet called preparePayment")
-        return
-
     def getPayment(self, cookie, charges):
         debugPrint("NullClientWallet called getPayment")
         return None, "Null wallet does not make payment"
