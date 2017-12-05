@@ -10,6 +10,9 @@ class IMobileCodeServerAuth:
     TIMEOUT_ATTRIBUTE = "Auth.Timeout"
     FLATRATE_ATTRIBUTE = "Auth.Flatrate"
     TIMERATE_ATTRIBUTE = "Auth.Timerate"
+    CONNECTOR_ATTRIBUTE = "Auth.Connector"
+    
+    PAYTO_ACCOUNT_ATTRIBUTE = "Auth.PaytoAccount"
     
     @classmethod
     def EncodeTrait(cls, key, value):
@@ -27,6 +30,7 @@ class IMobileCodeServerAuth:
     def getCharges(self, cookie, runtime): raise NotImplementedError()
     
 class IMobileCodeClientAuth:
+    def permit_Connector(self, connectorName): raise NotImplementedError()
     def createCookie(self): raise NotImplementedError() 
     def permit_SessionOpen(self, clientCookie, sessionCookie, serverAuthId, negotiationAttributes, serverEngineId, serverWalletId):
         raise NotImplementedError()
@@ -35,19 +39,17 @@ class IMobileCodeClientAuth:
     def getFinalResult(self, cookie, prePaymentResult, authorization): raise NotImplementedError()
 
 class NullServerAuth(IMobileCodeServerAuth):
-    TimeoutTrait = (IMobileCodeServerAuth.TIMEOUT_ATTRIBUTE, 60)
-    RateTrait = (IMobileCodeServerAuth.FLATRATE_ATTRIBUTE, 0)
+    
+    def __init__(self):
+        self.traits = {self.AUTHID_ATTRIBUTE: self.getId(),
+                       self.TIMEOUT_ATTRIBUTE: 60,
+                       self.FLATRATE_ATTRIBUTE: 0}
     
     def getId(self):
         return "Null Server Auth 1.0"
     
     def getDiscoveryTraits(self):
-        return [ self.EncodeTrait(*trait) for trait in [
-                            (self.AUTHID_ATTRIBUTE, self.getId()),
-                            self.TimeoutTrait,
-                            self.RateTrait
-                            ]
-            ]
+        return [ self.EncodeTrait(attr, self.traits[attr]) for attr in self.traits.keys() ]
     
     def getSessionCookie(self, clientCookie):
         cookie = (clientCookie << 32) + random.randint(0,2**32)
@@ -75,6 +77,9 @@ class NullServerAuth(IMobileCodeServerAuth):
         return 0
     
 class NullClientAuth(IMobileCodeClientAuth):
+    def permit_Connector(self, connectorName):
+        return True
+    
     def createCookie(self):
         return random.randint(0, 2**32)
     

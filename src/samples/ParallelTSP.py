@@ -20,8 +20,8 @@ sys.path.append("../../../Playground3-MobileCode/src")
 sys.path.append("../../../BitPoints-Bank-Playground3-")
   
 from MobileCodeService.Packets import MobileCodePacket, MobileCodeFailure
-from MobileCodeService.Auth import NullClientAuth
-from MobileCodeService.Wallet import NullClientWallet
+from MobileCodeService.Auth import IMobileCodeServerAuth, NullClientAuth
+from MobileCodeService.Wallet import NullClientWallet, PayingClientWallet
 from MobileCodeService.Client import MobileCodeClient, MobileCodeServerTracker
 from MobileCodeService.Packets import GeneralFailure
 #from BitPoints_Bank_Playground3.ui.CLIShell import TwistedStdioReplacement, CLIShell
@@ -123,6 +123,7 @@ class AddrPod(object):
         self.paid = 0
         self.currentJob = None
         self.alive = True
+        self.connector = "default"
         
     def assignJob(self, codeId):
         self.currentJob = codeId
@@ -141,6 +142,9 @@ class AddrPod(object):
         
         
 class ParallelTSP:
+    #TODO: This class is big, confusing, monolithic, and all kinds of bad.
+    #NEEDS REFACTORING!!!!!
+    
     PATHS_PER_PARALLEL = 150000
     VERIFY_ODDS = .1
     
@@ -156,9 +160,12 @@ class ParallelTSP:
              '"__template_start_num__"':startPath, 
              '"__template_end_num__"':endPath})
     
-    def __init__(self, n=40, pathsPerParallel=None, maxRate=20):
+    def __init__(self, tracker, auth, wallet, n, pathsPerParallel=None, maxRate=20):
 
-
+        self.tracker =tracker
+        self.auth = auth
+        self.wallet = wallet
+        
         self.__matrix = generateDistanceMatrix(n)
         self.__parallelCodes = {}
         self.__citiesStr = "[" + ",\n".join([str(row)+"\n" for row in self.__matrix]) + "]"
@@ -224,7 +231,7 @@ class ParallelTSP:
         otherwise create a new job
         """
         if addr not in self.__addrData:
-            self.__addrData[addr] = AddrPod(addr)
+            return None, None # not yet processed.
             
         if self.__addrData[addr].currentJob != None or not self.__addrData[addr].alive:
             return None, None
@@ -335,17 +342,27 @@ class ParallelTSP:
         self.__resubmit.append((self.__parallelCodes[id][0], id))
         self.__idsToPaths[1] = "<Needs Reassignment>"
         return False, "There shouldn't be exceptions"
+        
     
     def updateAvailableServers(self):
         validTime = 120.0
         servers = []
         for serverKey in self.tracker.serverDb:
             lastSeen, traits = self.tracker.serverDb[serverKey]
+            if serverKey not in self.__addrData:
+                self.__addrData[serverKey] = AddrPod(serverKey)
+            for traitString in traits:
+                if "=" in traitString:
+                    k, v = traitString.split("=")
+                    if k.strip() == IMobileCodeServerAuth.CONNECTOR_ATTRIBUTE:
+                        self.__addrData[serverKey].connector = v.strip()
             if time.time() - lastSeen > validTime:
-                if serverKey in self.__addrData:
-                    self.__addrData[serverKey].alive = False
+                self.__addrData[serverKey].alive = False
                 continue
             if serverKey in self.__addrData and self.__addrData[serverKey].currentJob != None:
+                continue
+            if not self.auth.permit_Connector(self.__addrData[serverKey].connector):
+                self.__addrData[serverKey].connector = None
                 continue
             servers.append(serverKey)
         self.__serversAvailable = servers
@@ -354,20 +371,26 @@ class ParallelTSP:
     def notifyNewServer(self, address, port):
         self.updateAvailableServers()
     
-    async def start(self, tracker, mobileCodeClientFactory):
-        self.tracker = tracker
+    async def start(self):
         self.updateAvailableServers()
-        tracker.registerListener(self.notifyNewServer)
+        self.tracker.registerListener(self.notifyNewServer)
         while not self.finished():
             nextServer = None
             while len(self.__serversAvailable) == 0:
                 await self.__serverAvailableCondition.awaitCondition(lambda: len(self.__serversAvailable) > 0)
                 if self.finished(): break
             nextServer = self.__serversAvailable.pop(0)
+            
+            # check the connector for the mobile code server
+            connector = self.__addrData[nextServer].connector
+            if not connector: continue
+            
+            #Get the code to run
             mobileCode, codeId = self.getNextCodeUnit(nextServer)
             if mobileCode:
                 address, port = nextServer
-                oneShotClient = mobileCodeClientFactory(address, port, mobileCode)
+                oneShotClient = MobileCodeClient(connector, address, port, mobileCode, 
+                                                 self.auth,  self.wallet)
                 # MobileCodeClient(connector, address, port, mobileCode, auth, wallet)
                 result = oneShotClient.run()
                 result.add_done_callback(lambda future: self.pickleBack(codeId, future, oneShotClient.charges))
@@ -380,11 +403,9 @@ class ParallelTSPCLI(CLIShell):
     is known. Execute 'start' to begin the computation. 
     Execute 'status' to see how things are going.
     """
-        def __init__(self, connector, auth, wallet, ptsp):
+        def __init__(self, ptsp):
             CLIShell.__init__(self, banner = self.BANNER)   
-            self.connector = connector
-            self.auth = auth
-            self.wallet = wallet
+
             self.ptsp = ptsp
             self.options = {}
             self.__poll = None
@@ -428,7 +449,7 @@ class ParallelTSPCLI(CLIShell):
                 self.transport.write("Check balance failed: {}\n".format(e))
             
         def checkBalance(self, writer):
-            f = self.wallet.checkBalance()
+            f = self.ptsp.wallet.checkBalance()
             f.add_done_callback(lambda f: self.__checkBalanceResponse(f, writer))
             
         def config(self, writer):
@@ -455,7 +476,7 @@ class ParallelTSPCLI(CLIShell):
             if not self.__started:
                 self.transport.write("Can't get blacklist Not yet started\n")
                 return
-            bl = self.auth.getBlacklist()
+            bl = self.ptsp.auth.getBlacklist()
             writer("Blacklisted Addresses:\n")
             for addr in bl:
                 writer("  %s\n" % addr)
@@ -522,15 +543,8 @@ class ParallelTSPCLI(CLIShell):
                 self.transport("Program already started.\n")
                 return
             self.__started=True
-            tracker = MobileCodeServerTracker()
-            tracker.startScan()
-            mobileCodeClientFactory = lambda address, port, code: MobileCodeClient(self.connector, 
-                                                                             address, port, code, 
-                                                                             self.auth, 
-                                                                             self.wallet)
-            coro = self.ptsp.start(tracker, mobileCodeClientFactory)
+            coro = self.ptsp.start()
             future = asyncio.get_event_loop().create_task(coro)
-            future.add_done_callback(lambda future: tracker.stopScan())
             future.add_done_callback(lambda future: self.finish())
             #kargs = {}
             #parameters = self.options.getSection("ptsp.parameters")
@@ -558,7 +572,7 @@ ParallelTSP
 #"""
 
 def main():
-    
+    from OnlineBank import BankClientProtocol
     #logctx = LoggingContext()
     #logctx.nodeId = "parallelTSP_"+myAddr.toString()
 
@@ -588,10 +602,22 @@ def main():
                 i+=1
     if "-stack" in echoArgs:
             stack = echoArgs["-stack"]
-    
-    PTSP = ParallelTSP(n=20)        
+            
+    tracker = MobileCodeServerTracker()
+    tracker.startScan()
+
+    bankcert = loadCertFromFile(args[0])
+    username = args[1]
+    pw = getpass.getpass("Enter bank password for {}: ".format(username))
+    payeraccount, merchantaccount = args[2:4]
+
+
+    bankstackfactory = lambda: BankClientProtocol(bankcert, username, pw)
+    wallet = PayingClientWallet(bankstackfactory, username, pw, payeraccount, 
+                                account, bankaddr=BANK_FIXED_PLAYGROUND_ADDR, bankport=BANK_FIXED_PLAYGROUND_PORT)
+    PTSP = ParallelTSP(tracker, NullClientAuth(), NullClientWallet(),n=20)        
     def initShell():
-        uiFactory = ParallelTSPCLI(stack, NullClientAuth(), NullClientWallet(), PTSP)
+        uiFactory = ParallelTSPCLI(PTSP)
         uiFactory.registerExitListener(lambda reason: loop.call_later(2.0, loop.stop))
         a = AdvancedStdio(uiFactory)
 
@@ -607,6 +633,7 @@ def main():
     #coro = playground.getConnector(stack).create_playground_connection(lambda: TwistedStdioReplacement.StandardIO(ParallelTSPCLI(configOptions, parallelMaster)),switchAddr, port)
     #transport, protocol = loop.run_until_complete(coro)
     loop.run_forever()
+    tracker.stopScan()
     loop.close()
 
     

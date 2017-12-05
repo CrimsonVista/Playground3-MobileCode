@@ -27,7 +27,7 @@ class IMobileCodeServerWallet:
 
     
 class IMobileCodeClientWallet:
-    def getPayment(self, cookie, charges): raise NotImplementedError()
+    def getPayment(self, cookie, paytoAccount, charges): raise NotImplementedError()
 
 #####
 ##  Null Wallets
@@ -47,7 +47,7 @@ class NullServerWallet(IMobileCodeServerWallet):
 
 
 class NullClientWallet(IMobileCodeClientWallet):
-    def getPayment(self, cookie, charges):
+    def getPayment(self, cookie, payToAccount, charges):
         debugPrint("NullClientWallet called getPayment")
         return None, "Null wallet does not make payment"
 
@@ -65,7 +65,7 @@ class PayingServerWallet(IMobileCodeServerWallet):
     def getId(self):
         return "Paying Wallet 1.0"  
     
-    def processPayment(self, cookie, charges, paymentData):
+    def processPayment(self, cookie, charges, payToAccount, paymentData):
         debugPrint("PayingServerWallet called processPayment with: charges =", charges, "cookie=", cookie, "paymentData(size)=", len(paymentData))
         if charges == 0:
             return True, ""
