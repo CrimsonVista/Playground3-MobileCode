@@ -4,6 +4,7 @@ Created on Nov 29, 2017
 @author: seth_
 '''
 
+from .Packets import MobileCodeServiceDiscovery, MobileCodeServiceDiscoveryResponse
 from .Packets import MobileCodePacket, MobileCodeFailure
 from .Packets import OpenSession, OpenSessionResponse
 from .Packets import RunMobileCode
@@ -15,9 +16,70 @@ from .Packets import GeneralFailure, AuthFailure, EngineFailure, WalletFailure
 import playground
 
 from asyncio import get_event_loop, Protocol, Future, run_coroutine_threadsafe, iscoroutine
-import random, logging
+import random, logging, time
 
 logger = logging.getLogger("playground.org,"+__name__)
+
+class MobileCodeServerTracker:
+    class PingProtocol(Protocol):
+        def __init__(self, notify):
+            self.notify = notify
+            
+        def connection_made(self, transport):
+            self.transport = transport
+            transport.write(MobileCodeServiceDiscovery().__serialize__())
+            get_event_loop().call_later(20.0, self.close)
+            
+        def connection_lost(self, reason=None):
+            self.transport=None
+            
+        def close(self):
+            if self.transport:
+                self.transport.close()
+            
+        def data_received(self, data):
+            d = MobileCodeServiceDiscoveryResponse.Deserializer()
+            d.update(data)
+            try:
+                pkts = list(d.nextPackets())
+            except:
+                pkts = []
+            if not pkts: return
+            packet = pkts[0]
+            self.notify(packet.Address, packet.Port, packet.Traits)
+            
+    def __init__(self):
+        # TODO: shutdown?
+        self.serverDb = {}
+        self._listeners = set([])
+        self._scan = False
+        
+    def registerListener(self, l):
+        self._listeners.add(l)
+        
+    def unregisterListener(self, l):
+        if l in self._listeners:
+            self._listeners.remove(l)
+        
+    def sendPing(self):
+        coro = playground.getConnector().create_playground_connection(lambda: self.PingProtocol(self.receivePong), 
+                                                               "0.0.0.0", 60000)
+        get_event_loop().create_task(coro)
+        if self._scan:
+            get_event_loop().call_later(5, self.sendPing)
+        
+    def receivePong(self, address, port, traits):
+        self.serverDb[(address, port)] = [time.time(), traits]
+        for listener in self._listeners:
+            listener(address, port)
+            
+    def stopScan(self):
+        self._scan = False
+        
+    def startScan(self):
+        if self._scan == False:
+            self._scan = True
+            self.sendPing()
 
 class MobileCodeClient:
     def __init__(self, connector, address, port, code, auth, wallet):
@@ -194,13 +256,13 @@ class StatelessClient(Protocol):
         assert(result.exception() is None)
         paymentData, message = result.result()
         if not paymentData and self.session.charges > 0:
-            print("NOT PAYMENTDATA!!!")
+            #print("NOT PAYMENTDATA!!!")
             return self.session.failed(message)
         self.session.paymentData = paymentData
         request = Payment(Cookie=self.session.cookie,
                           PaymentData=self.session.paymentData)
         self.transport.write(request.__serialize__())
-        print("Client has sent the payment!")
+        #print("Client has sent the payment!")
         
     def handlePaymentRequest(self, response):
         if not isinstance(response, PaymentResponse):

@@ -5,7 +5,7 @@ Created on Nov 30, 2017
 '''
 
 from playground.network.packet import PacketType
-from playground.network.packet.fieldtypes import UINT32, UINT64, LIST, BUFFER, STRING, BOOL
+from playground.network.packet.fieldtypes import UINT16, UINT32, UINT64, LIST, BUFFER, STRING, BOOL
 #from playground.network.packet.fieldtypes.attributes import Optional
 #from playground.common import CustomConstant as Constant
 
@@ -15,6 +15,20 @@ class MobileCodePacket(PacketType):
     DEFINITION_IDENTIFIER = MOBILE_CODE_PACKAGE+"MobileCodePacket"
     DEFINITION_VERSION = "1.0"
     FIELDS = []
+    
+class MobileCodeServiceDiscovery(MobileCodePacket):
+    DEFINITION_IDENTIFIER = MOBILE_CODE_PACKAGE+"MobileCodeServiceDiscovery"
+    DEFINITION_VERSION = "1.0"
+    FIELDS = []
+    
+class MobileCodeServiceDiscoveryResponse(MobileCodePacket):
+    DEFINITION_IDENTIFIER = MOBILE_CODE_PACKAGE+"MobileCodeServiceDiscoveryResponse"
+    DEFINITION_VERSION = "1.0"
+    FIELDS = [
+        ("Address", STRING),
+        ("Port", UINT16),
+        ("Traits", LIST(STRING))
+        ]
     
 class OpenSession(MobileCodePacket):
     DEFINITION_IDENTIFIER = MOBILE_CODE_PACKAGE+"OpenSession"

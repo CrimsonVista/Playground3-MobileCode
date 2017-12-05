@@ -27,11 +27,15 @@ class DefaultMobileCodeEngine(IMobileCodeEngine):
         return "Default Mobile Code Engine 1.0"
     
     def runMobileCode(self, cookie, code):
-        tempfile = "playground_mobilecode_script_{}_{}.py".format(os.getpid(), str(time.time()).replace(".","_"))
+        tempfile = "/tmp/playground_mobilecode_script_{}_{}.py".format(os.getpid(), str(time.time()).replace(".","_"))
         try:
             with open(tempfile,"w+") as f:
                 f.write(code)
-            p = subprocess.Popen(["python", f.name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            #p = subprocess.Popen(["python", f.name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            args = ["python", "./pypy_interact.py", "--tmp=/tmp", "pypy3-c-sandbox", "-S", f.name]
+            p = subprocess.Popen(args, 
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
+                                 cwd="/home/sethjn/WIN_DEV/pypy_35/pypy3-v5.9.0-src/pypy/sandbox")
             self._processes[cookie] = ProcessPod(p, tempfile, time.time())
             result = True, ""
         except Exception as e:

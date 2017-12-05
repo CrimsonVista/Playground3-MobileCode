@@ -6,9 +6,17 @@ Created on Dec 1, 2017
 import random
 
 class IMobileCodeServerAuth:
-    TIMEOUT_ATTRIBUTE = "Timeout"
+    AUTHID_ATTRIBUTE = "Auth.Id"
+    TIMEOUT_ATTRIBUTE = "Auth.Timeout"
+    FLATRATE_ATTRIBUTE = "Auth.Flatrate"
+    TIMERATE_ATTRIBUTE = "Auth.Timerate"
+    
+    @classmethod
+    def EncodeTrait(cls, key, value):
+        return "{}={}".format(key,value)
     
     def getId(self): raise NotImplementedError()
+    def getDiscoveryTraits(self): raise NotImplementedError()
     def getSessionCookie(self, clientCookie): raise NotImplementedError()
     def permit_newConnection(self, transport): raise NotImplementedError()
     def clearState(self, cookie): raise NotImplementedError()
@@ -27,8 +35,19 @@ class IMobileCodeClientAuth:
     def getFinalResult(self, cookie, prePaymentResult, authorization): raise NotImplementedError()
 
 class NullServerAuth(IMobileCodeServerAuth):
+    TimeoutTrait = (IMobileCodeServerAuth.TIMEOUT_ATTRIBUTE, 60)
+    RateTrait = (IMobileCodeServerAuth.FLATRATE_ATTRIBUTE, 0)
+    
     def getId(self):
         return "Null Server Auth 1.0"
+    
+    def getDiscoveryTraits(self):
+        return [ self.EncodeTrait(*trait) for trait in [
+                            (self.AUTHID_ATTRIBUTE, self.getId()),
+                            self.TimeoutTrait,
+                            self.RateTrait
+                            ]
+            ]
     
     def getSessionCookie(self, clientCookie):
         cookie = (clientCookie << 32) + random.randint(0,2**32)
@@ -47,7 +66,7 @@ class NullServerAuth(IMobileCodeServerAuth):
         return True, ""
     
     def getSessionAttributes(self, cookie):
-        return []
+        return self.getDiscoveryTraits()
     
     def getAuthorizedResult(self, cookie, rawOutput):
         return rawOutput, b""
@@ -78,6 +97,10 @@ class SimplePayingServerAuth(NullServerAuth):
         assert(type(flatfee) == type(1))
         assert(flatfee >= 0)
         self.fee = flatfee
+        self.RateTrait = (self.FLATRATE_ATTRIBUTE, self.fee)
+        
+    def getId(self):
+        return "Simple Paying Server Auth 1.0"
 
     def getCharges(self, cookie, runtime):
         return self.fee

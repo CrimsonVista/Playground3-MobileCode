@@ -5,7 +5,7 @@ Updated to Python3/Playground3 on Nov 28, 2017
 @author: sethjn
 '''
 
-from .Packets import MobileCodePacket
+from .Packets import MobileCodePacket, MobileCodeServiceDiscovery, MobileCodeServiceDiscoveryResponse
 from .Packets import OpenSession, OpenSessionResponse
 from .Packets import RunMobileCode
 from .Packets import GetMobileCodeStatus, GetMobileCodeStatusResponse
@@ -35,8 +35,63 @@ class MobileCodeSession:
         self.encryptedOutput = None
         self.decryptionKey = None
         
+class DiscoveryResponder:
+    DISCOVERY_PORT = 60000
+    DISCOVERY_ADDRESS = "0.0.0.0"
+    def __init__(self, serverAddress, serverPort, auth):
+        self._serverAddress = serverAddress
+        self._serverPort = serverPort
+        self._discoveryConnection = playground.network.protocols.switching.PlaygroundSwitchTxProtocol(self, self.DISCOVERY_ADDRESS) 
+        self._auth = auth
+        self._running = False
+        
+        vnicService = playground.network.devices.vnic.connect.StandardVnicService()
+        
+        if self._serverAddress == "default":
+            vnicDeviceName = vnicService.getDefaultVnic()
+            self._serverAddress = vnicService.getVnicPlaygroundAddress(vnicDeviceName)
+        else:    
+            vnicDeviceName = vnicService.getVnicByLocalAddress(self._serverAddress)
+            
+        if not vnicDeviceName:
+            # fall back to default vnic
+            vnicDeviceName = vnicService.getDefaultVnic()
+            
+        vnicDevice = vnicService.deviceManager.getDevice(vnicDeviceName)
+        routingDeviceName = vnicDevice.connectedTo()
+        switch = vnicService.deviceManager.getDevice(routingDeviceName)
+        
+        self._switchAddress, self._switchPort = switch.tcpLocation()
+        
+    def start(self):
+        if self._running: return
+        self._running = True
+        coro = get_event_loop().create_connection(lambda: self._discoveryConnection, self._switchAddress, self._switchPort)
+        get_event_loop().create_task(coro)
+        
+    def connectionMade(self):
+        pass
+        
+    def demux(self, src, srcPort, dst, dstPort, demuxData):
+        if dstPort != self.DISCOVERY_PORT:
+            return
+        d = MobileCodeServiceDiscovery.Deserializer()
+        d.update(demuxData)
+        pkts = list(d.nextPackets())
+        if not pkts: return
+        self._discoveryConnection.write(dst, dstPort, src, srcPort, MobileCodeServiceDiscoveryResponse(
+                                                                    Address=self._serverAddress,
+                                                                    Port=self._serverPort,
+                                                                    Traits=self._auth.getDiscoveryTraits()).__serialize__())
+        
+    def close(self):
+        try:
+            self._discoverConnection.transport.close()
+        except:
+            pass
+        
+        
 class ServerProtocol(Protocol):
-    
     STATE_UNINIT = "Uninitialized"
     STATE_RESTORE_STATE = "Restore state in connectionless protocol"
     STATE_OPEN = "Open"
@@ -65,7 +120,7 @@ class ServerProtocol(Protocol):
         self._state = self.STATE_UNINIT
         self._deserializer = MobileCodePacket.Deserializer()
         self._timeoutBuckets = []
-        self.transport = None
+        self.transport = None  
         
     def connection_made(self, transport):
         mobileCodeClient = transport.get_extra_info("peername")
@@ -95,6 +150,8 @@ class ServerProtocol(Protocol):
                 self._handleMobileCodeFinished(pkt)
             else:
                 logger.debug("Got unexpected state {}. Ignored.".format(state))
+            # We only allow one packet per connection. Break look
+            break
         self.transport.close()
         
     def _closeSession(self, cookie):
@@ -124,12 +181,16 @@ class ServerProtocol(Protocol):
             
         session = MobileCodeSession(self._auth.getSessionCookie(packet.Cookie))
         negotiationAttributes = self._auth.getSessionAttributes(packet.Cookie)
-        session.negotiationAttributes = dict(negotiationAttributes)
+        session.negotiationAttributes = {}
+        for attrString in negotiationAttributes:
+            k,v = [d.strip() for d in attrString.split("=")]
+            session.negotiationAttributes[k]=v
         session.state = self.STATE_OPEN
         
         logger.debug("Server created session with cookie {}".format(session.cookie))
         self.Sessions[session.cookie] = session
         timeout = session.negotiationAttributes.get(self._auth.TIMEOUT_ATTRIBUTE, self.DEFAULT_SESSION_TIMEOUT)
+        timeout = int(timeout)
         get_event_loop().call_later(timeout, self._closeSession, session.cookie)
         
         response = OpenSessionResponse(Cookie = session.cookie,
