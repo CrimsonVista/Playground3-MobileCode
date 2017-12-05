@@ -72,3 +72,15 @@ class NullClientAuth(IMobileCodeClientAuth):
     
     def getFinalResult(self, cookie, prePaymentResult, authorization):
         return prePaymentResult
+
+class SimplePayingServerAuth(NullServerAuth):
+    def __init__(self, flatfee):
+        assert(type(flatfee) == type(1))
+        assert(flatfee >= 0)
+        self.fee = flatfee
+
+    def getCharges(self, cookie, runtime):
+        return self.fee
+
+class SimplePayingClientAuth(NullClientAuth):
+    pass

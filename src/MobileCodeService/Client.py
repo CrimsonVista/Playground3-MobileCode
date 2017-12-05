@@ -14,7 +14,7 @@ from .Packets import GeneralFailure, AuthFailure, EngineFailure, WalletFailure
 
 import playground
 
-from asyncio import get_event_loop, Protocol, Future
+from asyncio import get_event_loop, Protocol, Future, run_coroutine_threadsafe, iscoroutine
 import random, logging
 
 logger = logging.getLogger("playground.org,"+__name__)
@@ -119,6 +119,7 @@ class StatelessClient(Protocol):
                                                           serverEngineId, serverWalletId)
         
         if not permitted:
+            print("NOT PERMITTED!!!")
             self.session.failed(reason)
         else:
             self.session.cookie = updatedCookie
@@ -142,6 +143,7 @@ class StatelessClient(Protocol):
         
         permitted, reason = self.auth.permit_status(response.Cookie, response.Complete, response.Runtime)
         if not permitted:
+            print("NOT PREMITTED2!!!")
             return self.session.failed(reason)
         
         complete = response.Complete
@@ -164,6 +166,7 @@ class StatelessClient(Protocol):
         
         permitted, reason = self.auth.permit_result(response.Cookie, response.Result, response.Charges)
         if not permitted:
+            print("NOT PERMITTED3!!!")
             return self.session.failed(reason)
         
         self.session.prePaymentResult = response.Result
@@ -173,16 +176,31 @@ class StatelessClient(Protocol):
         
     def sendPaymentRequest(self):
         if self.session.charges > 0:
-            paymentData, message = self.wallet.getPayment(self.session.cookie, self.session.charges)
-            if not paymentData:
-                return self.session.failed(message)
+            paymentmethod = self.wallet.getPayment(self.session.cookie, self.session.charges)
+            if iscoroutine(paymentmethod):
+                fut = run_coroutine_threadsafe(paymentmethod, get_event_loop())
+                fut.add_done_callback(self.__sendPayment)
+            else:
+                fut = Future()
+                fut.set_result((paymentmethod, None))
+                self.__sendPayment(fut)
         else:
             paymentData = b""
-        
+            fut = Future()
+            fut.set_result((paymentData, None))
+            self.__sendPayment(fut)
+
+    def __sendPayment(self, result):
+        assert(result.exception() is None)
+        paymentData, message = result.result()
+        if not paymentData and self.session.charges > 0:
+            print("NOT PAYMENTDATA!!!")
+            return self.session.failed(message)
         self.session.paymentData = paymentData
         request = Payment(Cookie=self.session.cookie,
                           PaymentData=self.session.paymentData)
         self.transport.write(request.__serialize__())
+        print("Client has sent the payment!")
         
     def handlePaymentRequest(self, response):
         if not isinstance(response, PaymentResponse):
@@ -220,4 +238,5 @@ class StatelessClient(Protocol):
             errorMessage = failure.ErrorMessage
         logger.debug("Mobile Code Execution Failed: {}".format(errorMessage))
         # TODO later. Handle different failures differently
+        print("NOT HANDLING!!!")
         self.session.failed(errorMessage)     
