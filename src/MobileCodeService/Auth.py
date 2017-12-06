@@ -22,14 +22,16 @@ class IMobileCodeServerAuth:
     
     @classmethod
     def AttrListToDictionary(cls, attrs):
-        attrs = {}
+        d = {}
         for encodedAttr in attrs:
+            encodedAttr = str(encodedAttr)
+            print(encodedAttr)
             try:
                 k,v = encodedAttr.split("=")
-                attrs[k.strip()] = v.strip()
-            except:
-                pass
-        return attrs
+                d[k.strip()] = v.strip()
+            except Exception as e:
+                print(e)
+        return d
     
     def getId(self): raise NotImplementedError()
     def getDiscoveryTraits(self): raise NotImplementedError()
@@ -118,7 +120,7 @@ class NullClientAuth(IMobileCodeClientAuth):
         return random.randint(0, 2**32)
     
     def permit_SessionOpen(self, clientCookie, sessionCookie, serverAuthId, negotiationAttributes, serverEngineId, serverWalletId):
-        if not self._checkCookie(self, clientCookie, sessionCookie):
+        if not self._checkCookie(clientCookie, sessionCookie):
             return False, "Cookie Mismatch"
         if not self._checkRate(negotiationAttributes):
             return False, "Unacceptable Rate"
@@ -135,19 +137,20 @@ class NullClientAuth(IMobileCodeClientAuth):
         return prePaymentResult
 
 class SimplePayingServerAuth(NullServerAuth):
-    def __init__(self, flatfee):
+    def __init__(self, paytoaccount, flatfee):
         super().__init__()
         assert(type(flatfee) == type(1))
         assert(flatfee >= 0)
         self.fee = flatfee
         self.traits[self.FLATRATE_ATTRIBUTE]=self.fee
+        self.traits[self.PAYTO_ACCOUNT_ATTRIBUTE]=paytoaccount
         
     def getAuthorizedResult(self, cookie, rawOutput):
         key = os.urandom(16)
         IV = os.urandom(16)
         authorizationData = key + IV
-        writer = Cipher(algorithms.AES(self.writeKey), 
-                             modes.CTR(self.writeIv), 
+        writer = Cipher(algorithms.AES(key), 
+                             modes.CTR(IV), 
                              backend=default_backend()).encryptor()
         ciphertext = writer.update(rawOutput)
         return ciphertext, authorizationData
@@ -164,15 +167,15 @@ class SimplePayingClientAuth(NullClientAuth):
     
     def getFinalResult(self, cookie, prePaymentResult, authorization):
         key, IV = authorization[:16], authorization[16:]
-        reader = Cipher(algorithms.AES(self.writeKey), 
-                             modes.CTR(self.writeIv), 
+        reader = Cipher(algorithms.AES(key), 
+                             modes.CTR(IV), 
                              backend=default_backend()).decryptor()
         plaintext = reader.update(prePaymentResult)
         return plaintext
     
 class SimpleRatePayingServerAuth(SimplePayingServerAuth):
-    def __init__(self, hourlyRate):
-        super().__init__()
+    def __init__(self, hourlyRate, paytoaccount):
+        super().__init__(0, paytoaccount)
         if self.FLATRATE_ATTRIBUTE in self.traits:
             del self.traits[self.FLATRATE_ATTRIBUTE]
         self.traits[self.HOURLYRATE_ATTRIBUTE] = self.hourlyRate = hourlyRate

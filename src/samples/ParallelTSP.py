@@ -20,7 +20,7 @@ sys.path.append("../../../Playground3-MobileCode/src")
 sys.path.append("../../../BitPoints-Bank-Playground3-")
   
 from MobileCodeService.Packets import MobileCodePacket, MobileCodeFailure
-from MobileCodeService.Auth import IMobileCodeServerAuth, NullClientAuth
+from MobileCodeService.Auth import IMobileCodeServerAuth, NullClientAuth, SimplePayingClientAuth
 from MobileCodeService.Wallet import NullClientWallet, PayingClientWallet
 from MobileCodeService.Client import MobileCodeClient, MobileCodeServerTracker
 from MobileCodeService.Packets import GeneralFailure
@@ -425,10 +425,10 @@ class ParallelTSPCLI(CLIShell):
             statusHandler.configure(1, self.status, helpTxt="Show status and set to poll the status",
                                     usage="[polling time]")
             self.registerCommand(statusHandler)
-            checkbalanceHandler = CLIShell.CommandHandler("balance", helpTxt="Check the current account balance",
-                                                          defaultCb=self.checkBalance,
-                                                          mode=CLIShell.CommandHandler.STANDARD_MODE)
-            self.registerCommand(checkbalanceHandler)
+            #checkbalanceHandler = CLIShell.CommandHandler("balance", helpTxt="Check the current account balance",
+            #                                              defaultCb=self.checkBalance,
+            #                                              mode=CLIShell.CommandHandler.STANDARD_MODE)
+            #self.registerCommand(checkbalanceHandler)
             sampleCodeString = CLIShell.CommandHandler("sample", helpTxt="Generate A sample remote code string",
                                                        mode=CLIShell.CommandHandler.STANDARD_MODE)
             sampleCodeString.configure(3, self.getSampleCodeString, 
@@ -436,10 +436,10 @@ class ParallelTSPCLI(CLIShell):
                                        usage="[startpath] [endpath] [filename]")
             self.registerCommand(sampleCodeString)
             
-            blacklistCommand = CLIShell.CommandHandler("blacklist", helpTxt="Get the list of blacklisted nodes",
-                                                       mode=CLIShell.CommandHandler.STANDARD_MODE,
-                                                       defaultCb=self.blacklistedAddrs)
-            self.registerCommand(blacklistCommand)
+            #blacklistCommand = CLIShell.CommandHandler("blacklist", helpTxt="Get the list of blacklisted nodes",
+            #                                           mode=CLIShell.CommandHandler.STANDARD_MODE,
+            #                                           defaultCb=self.blacklistedAddrs)
+            #self.registerCommand(blacklistCommand)
             
         def __checkBalanceResponse(self, f, writer):
             e = f.exception()
@@ -566,13 +566,14 @@ class ParallelTSPCLI(CLIShell):
                 self.__pollingCallback = None
 
 USAGE = """
-ParallelTSP 
+ParallelTSP <bank cert> <username> <payfromaccount> -stack=<network stack>
 """
 #<bank cert> <login name> <account name> <playground server> <playground port> <-stack=stack_name>
 #"""
 
 def main():
-    from OnlineBank import BankClientProtocol
+    from OnlineBank import BankClientProtocol, BANK_FIXED_PLAYGROUND_ADDR, BANK_FIXED_PLAYGROUND_PORT
+    from CipherUtil import loadCertFromFile
     #logctx = LoggingContext()
     #logctx.nodeId = "parallelTSP_"+myAddr.toString()
 
@@ -584,38 +585,38 @@ def main():
 
     loop = asyncio.get_event_loop()
     loop.set_debug(enabled=True)
-    echoArgs = {}
+    ptspArgs = {}
     
     from playground.common.logging import EnablePresetLogging, PRESET_DEBUG
     #EnablePresetLogging(PRESET_DEBUG)
-    
-    stack = "default"
-    
+        
     args= sys.argv[1:]
     i = 0
     for arg in args:
         if arg.startswith("-"):
                 k,v = arg.split("=")
-                echoArgs[k]=v
+                ptspArgs[k]=v
         else:
-                echoArgs[i] = arg
+                ptspArgs[i] = arg
                 i+=1
-    if "-stack" in echoArgs:
-            stack = echoArgs["-stack"]
+    stack = ptspArgs.get("-stack","default")
+    bankAddress = ptspArgs.get("-bankaddr", BANK_FIXED_PLAYGROUND_ADDR)
+    bankPort = ptspArgs.get("-bankport", BANK_FIXED_PLAYGROUND_PORT)
             
     tracker = MobileCodeServerTracker()
     tracker.startScan()
 
-    bankcert = loadCertFromFile(args[0])
+    bankcert = loadCertFromFile(ptspArgs[0])
+    payeraccount = ptspArgs[2]
     username = args[1]
     pw = getpass.getpass("Enter bank password for {}: ".format(username))
-    payeraccount, merchantaccount = args[2:4]
-
 
     bankstackfactory = lambda: BankClientProtocol(bankcert, username, pw)
-    wallet = PayingClientWallet(bankstackfactory, username, pw, payeraccount, 
-                                account, bankaddr=BANK_FIXED_PLAYGROUND_ADDR, bankport=BANK_FIXED_PLAYGROUND_PORT)
-    PTSP = ParallelTSP(tracker, NullClientAuth(), NullClientWallet(),n=20)        
+    wallet = PayingClientWallet(stack, bankstackfactory, username, pw, payeraccount,
+                                bankAddress, bankPort)
+
+    clientAuth = SimplePayingClientAuth()
+    PTSP = ParallelTSP(tracker, clientAuth, wallet, n=5)        
     def initShell():
         uiFactory = ParallelTSPCLI(PTSP)
         uiFactory.registerExitListener(lambda reason: loop.call_later(2.0, loop.stop))

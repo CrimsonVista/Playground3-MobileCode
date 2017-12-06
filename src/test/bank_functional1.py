@@ -50,14 +50,14 @@ def main():
     debugPrint("Creating PayingServerWallet")
     serverWallet = PayingServerWallet(bankcert, merchantaccount)
     debugPrint("Creating SimplePayingServerAuth")
-    serverAuth = SimplePayingServerAuth(fee)
+    serverAuth = SimplePayingServerAuth(merchantaccount, fee)
     debugPrint("Creating DefaultMobileCodeEngine")
     serverEngine = DefaultMobileCodeEngine()
 
     # debugPrint("Creating NullClientWallet")
     # clientWallet = NullClientWallet()
     debugPrint("Creating PayingClientWallet")
-    clientWallet = PayingClientWallet(bankstackfactory, username, pw, payeraccount, merchantaccount)
+    clientWallet = PayingClientWallet("default", bankstackfactory, username, pw, payeraccount, "localhost")
 
     def serverFactory():
         debugPrint("Factory creating MobileCodeServer")

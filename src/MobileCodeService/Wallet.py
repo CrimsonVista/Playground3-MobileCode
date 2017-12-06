@@ -12,10 +12,13 @@ sys.path.insert(0, '../../../BitPoints-Bank-Playground3-/')
 from OnlineBank import BANK_FIXED_PLAYGROUND_ADDR, BANK_FIXED_PLAYGROUND_PORT
 from CipherUtil import RSA_SIGNATURE_MAC
 from BankCore import LedgerLine
+from asyncio import Future
 
 import playground
 
 from BankMessages import Receipt
+
+from functools import partial
 
 #####
 ##  Wallet Interfaces
@@ -27,7 +30,7 @@ class IMobileCodeServerWallet:
 
     
 class IMobileCodeClientWallet:
-    def getPayment(self, cookie, paytoAccount, charges): raise NotImplementedError()
+    def getPayment(self, cookie, payToAccount, charges): raise NotImplementedError()
 
 #####
 ##  Null Wallets
@@ -65,7 +68,7 @@ class PayingServerWallet(IMobileCodeServerWallet):
     def getId(self):
         return "Paying Wallet 1.0"  
     
-    def processPayment(self, cookie, charges, payToAccount, paymentData):
+    def processPayment(self, cookie, charges, paymentData):
         debugPrint("PayingServerWallet called processPayment with: charges =", charges, "cookie=", cookie, "paymentData(size)=", len(paymentData))
         if charges == 0:
             return True, ""
@@ -118,25 +121,32 @@ class PayingServerWallet(IMobileCodeServerWallet):
 
 
 class PayingClientWallet(IMobileCodeClientWallet):
-    def __init__(self, bankstackfactory, username, pw, myaccount, merchantaccount, bankaddr=BANK_FIXED_PLAYGROUND_ADDR, bankport=BANK_FIXED_PLAYGROUND_PORT):
-        self._loginName = username
-        self._pw = pw
+    def __init__(self, connector, bankfactory, username, pw, myaccount, bankaddr=BANK_FIXED_PLAYGROUND_ADDR, bankport=BANK_FIXED_PLAYGROUND_PORT):
+        self.__loginName = username
+        self.__pw = pw
         self.__bankAddr = bankaddr
         self.__bankPort = bankport
         self.__srcPaymentAccount = myaccount
-        self.__destPaymentAccount = merchantaccount
+        self.__bankFactory = bankfactory
+        self.__connector = connector
+        self.__connectionFutures = {}
 
         self.__d = None
         
         self.__asyncLoop = asyncio.get_event_loop()
 
+        self.__bankClients = dict()
+        self.__connected = dict()
+
+    def __connect(self, cookie):
         # Immediately connect to the bank (Should we wait for something instead?)
-        coro = playground.getConnector().create_playground_connection(bankstackfactory, self.__bankAddr, self.__bankPort)
+        debugPrint("In __connect")
+        coro = playground.getConnector(self.__connector).create_playground_connection(self.__bankFactory, self.__bankAddr, self.__bankPort)
         fut = asyncio.run_coroutine_threadsafe(coro, self.__asyncLoop)
-        fut.add_done_callback(self.__handleClientConnection)
+        fut.add_done_callback(partial(self.__handleClientConnection, cookie=cookie))
         debugPrint("PayingClientWallet initialized!")
 
-    def __handleClientConnection(self, fut):
+    def __handleClientConnection(self, fut, cookie):
         debugPrint("PayingClientWallet __handleClientConnection")
         debugPrint("Future done?", fut.done())
         try:
@@ -148,52 +158,59 @@ class PayingClientWallet(IMobileCodeClientWallet):
             debugPrint("PayingClientWallet exception:", e)
             debugPrint(traceback.format_exc())
         debugPrint("Bank connected. Running startup routines with protocol %s" % protocol)
-        self.__bankConnected(protocol)
+
         print("Client Connected. Starting UI t:{}. p:{}".format(transport, protocol))
 
-    def __bankConnected(self, result):
         try:
-            self.__bankClient = result
+            self.__bankClients[cookie] = protocol
             # self.__bankClient.setLocalErrorHandler(self)
-            self.__d = self.__bankClient.waitForConnection() # self.__bankClient.loginToServer()
-            self.__bankClient.waitForTermination().addCallback(lambda *args: self.quit())
-            self.__d.addCallback(self.__loginToServer)
-            self.__d.addErrback(self.__noLogin)
+            self.__d = self.__bankClients[cookie].waitForConnection() # self.__bankClient.loginToServer()
+            self.__bankClients[cookie].waitForTermination().addCallback(lambda *args: self.quit())
+            self.__d.addCallback(partial(self.__loginToServer,cookie=cookie))
+            self.__d.addErrback(partial(self.__noLogin, cookie=cookie))
             debugPrint("Paying Client Wallet: Logging in to bank. Waiting for server\n")
-            return self.__d
         except:
             print(traceback.format_exc())
 
-    def __loginToServer(self, success):
+    def __loginToServer(self, success, cookie):
         if not success:
-            return self.__noLogin(Exception("Failed to login"))
-        self.__d = self.__bankClient.loginToServer()
-        self.__d.addCallback(self.__login)
-        self.__d.addErrback(self.__noLogin)
+            return self.__noLogin(Exception("Failed to login"), cookie=cookie)
+        self.__d = self.__bankClients[cookie].loginToServer()
+        self.__d.addCallback(partial(self.__login, cookie=cookie))
+        self.__d.addErrback(partial(self.__noLogin, cookie=cookie))
         return self.__d
 
-    def __noLogin(self, e):
-        debugPrint("Paying Wallet Client: Failed to login to bank: %s\n" % str(e))
+    def __noLogin(self, e, cookie):
+        debugPrint("Paying Wallet Client: Failed to login to bank with bankClient %s. Error:\n%s\n" % (self.__bankClients[cookie], str(e)))
 
-    def __login(self, success):
+    def __login(self, success, cookie):
         debugPrint("Paying Wallet Client: Logged in to bank. Switching to account: %s\n" % self.__srcPaymentAccount)
-        self.__d = self.__bankClient.switchAccount(self.__srcPaymentAccount)
-        self.__d.addCallback(self.__switchAccount)
-        self.__d.addErrback(self.__failed)
+        self.__d = self.__bankClients[cookie].switchAccount(self.__srcPaymentAccount)
+        self.__d.addCallback(partial(self.__switchAccount, cookie=cookie))
+        self.__d.addErrback(partial(self.__failed, cookie=cookie))
 
-    def __switchAccount(self, msgObj):
+    def __switchAccount(self, msgObj, cookie):
         debugPrint("PayingClientWallet: Successfully logged into account.")
-        self.__connected = True
+        self.__connected[cookie] = True
+        self.__connectionFutures[cookie].set_result(True)
 
-    def __failed(self, e):
-        debugPrint("PayingClientWallet \033[91m  Switching account failed. Reason: %s\033[0m" % str(e))
+
+    def __failed(self, e, cookie):
+        debugPrint("PayingClientWallet \033[91m  Switching account failed on bankClient %s. Reason:\n%s\033[0m" % (self.__bankClients[cookie], str(e)))
         return Exception(e)
 
-    async def getPayment(self, cookie, charges):
+    async def getPayment(self, cookie, payToAccount, charges):
         debugPrint("PayingClientWallet called get payment with cookie=", cookie, "charges=", charges)
-        if self.__connected:
 
-            result = await self.__getTransferProof(cookie, charges)
+        self.__connectionFutures[cookie] = Future()
+        debugPrint("Call connect")
+        self.__connect(cookie)
+
+        await self.__connectionFutures[cookie]
+        # This check is now redundant
+        if self.__connected[cookie]:
+
+            result = await self.__getTransferProof(cookie, payToAccount, charges)
             if result:
                 debugPrint("PayingClientWallet transfer receipt size:", len(result))
                 return result, "Received receipt from Bank"
@@ -204,9 +221,9 @@ class PayingClientWallet(IMobileCodeClientWallet):
             debugPrint("PayingClientWallet is not connected to the bank?")
             return None, "Paying client wallet is not connected to the bank"
     
-    async def __getTransferProof(self, cookie, charges):
+    async def __getTransferProof(self, cookie, payToAccount, charges):
         debugPrint("PayingClientWallet sending transfer to bank")
-        fut = self.__bankClient.transfer(self.__destPaymentAccount, charges, str(cookie)).f
+        fut = self.__bankClients[cookie].transfer(payToAccount, charges, str(cookie)).f
         try:
             debugPrint("PayingClientWallet waiting on bank transfer receipt")
             result = await fut
@@ -215,7 +232,7 @@ class PayingClientWallet(IMobileCodeClientWallet):
             return None
 
         debugPrint("PayingClientWallet transfer receipt received. Checking it...", result)
-        check, receipt = self.__receipt(result)
+        check, receipt = self.__receipt(result, cookie)
         if check:
             # Remove potentially private data from the packet
             receipt.ClientNonce = 0
@@ -225,7 +242,7 @@ class PayingClientWallet(IMobileCodeClientWallet):
         else:
             return None
 
-    def __receipt(self, msgObj):
+    def __receipt(self, msgObj, cookie):
         try:
             receiptFile = "bank_receipt."+str(time.time())
             sigFile = receiptFile + ".signature"
@@ -236,7 +253,7 @@ class PayingClientWallet(IMobileCodeClientWallet):
                 f.write(receiptBytes)
             with open(sigFile, "wb") as f:
                 f.write(sigBytes)
-            if not self.__bankClient.verify(receiptBytes, sigBytes):
+            if not self.__bankClients[cookie].verify(receiptBytes, sigBytes):
                 responseTxt = "Received a receipt with mismatching signature.\n"
                 responseTxt += "\tPlease report this to the bank administrator.\n"
                 debugPrint("Paying Client Wallet: ",responseTxt)

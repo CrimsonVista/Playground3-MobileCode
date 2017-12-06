@@ -17,6 +17,7 @@ import playground
 
 from asyncio import get_event_loop, Protocol, Future, run_coroutine_threadsafe, iscoroutine
 import random, logging, time
+from MobileCodeService.Auth import NullServerAuth
 
 logger = logging.getLogger("playground.org,"+__name__)
 
@@ -97,6 +98,7 @@ class MobileCodeClient:
         self.prePaymentResult = None
         self.finalResult = None
         self.charges = 0
+        self.paytoaccount = None
         self.authorization = None
         self.paymentData = None
         self.cookie = None
@@ -180,6 +182,14 @@ class StatelessClient(Protocol):
                                                           serverAuthId, negotiationAttributes,
                                                           serverEngineId, serverWalletId)
         
+        self._serverAttributes = self.auth.AttrListToDictionary(negotiationAttributes)
+        print("Got negotiation attributes", [str(x) for x in negotiationAttributes])
+        print(self._serverAttributes)
+        logger.debug(negotiationAttributes)
+        logger.debug("*******************")
+        self.session.paytoaccount = self._serverAttributes.get(NullServerAuth.PAYTO_ACCOUNT_ATTRIBUTE, None)
+        
+        
         if not permitted:
             print("NOT PERMITTED!!!")
             self.session.failed(reason)
@@ -233,12 +243,14 @@ class StatelessClient(Protocol):
         
         self.session.prePaymentResult = response.Result
         self.session.charges = response.Charges
+        if self.session.charges > 0 and self.session.paytoaccount == None:
+            return self.session.failed("Cannot have charges without a pay-to account")
         
         self.session.transition(self.STATE_PAYMENT)
         
     def sendPaymentRequest(self):
         if self.session.charges > 0:
-            paymentmethod = self.wallet.getPayment(self.session.cookie, self.session.charges)
+            paymentmethod = self.wallet.getPayment(self.session.cookie, self.session.paytoaccount, self.session.charges)
             if iscoroutine(paymentmethod):
                 fut = run_coroutine_threadsafe(paymentmethod, get_event_loop())
                 fut.add_done_callback(self.__sendPayment)
