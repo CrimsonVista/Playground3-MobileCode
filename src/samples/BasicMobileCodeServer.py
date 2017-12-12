@@ -43,6 +43,7 @@ if __name__=="__main__":
     serverEngine = DefaultMobileCodeEngine()
     serverAuth = SimplePayingServerAuth(paytoAccount, 5) # hardcoded 5 bitpoints per job
     serverAuth.traits[serverAuth.CONNECTOR_ATTRIBUTE]=stack
+    serverAuth.traits[serverAuth.TIMEOUT_ATTRIBUTE]=600 # 10 minutes.
     serverFactory = lambda: MobileCodeServer(serverWallet, serverAuth, serverEngine)
 
     coro = playground.getConnector(stack).create_playground_server(serverFactory, port)

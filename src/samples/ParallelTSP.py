@@ -37,6 +37,8 @@ from playground.asyncio_lib.SimpleCondition import SimpleCondition
 #from asyncio import Condition
 
 logger = logging.getLogger("playground.org,"+__name__)
+from playground.common.logging import EnablePresetLogging, PRESET_DEBUG
+EnablePresetLogging(PRESET_DEBUG)
 
 from cryptography.hazmat.backends import default_backend
 backend = default_backend()
