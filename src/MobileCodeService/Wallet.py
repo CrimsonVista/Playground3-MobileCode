@@ -197,6 +197,7 @@ class PayingClientWallet(IMobileCodeClientWallet):
 
     def __failed(self, e, cookie):
         debugPrint("PayingClientWallet \033[91m  Switching account failed on bankClient %s. Reason:\n%s\033[0m" % (self.__bankClients[cookie], str(e)))
+        self.__bankClients[cookie].close()
         return Exception(e)
 
     async def getPayment(self, cookie, payToAccount, charges):
@@ -211,6 +212,9 @@ class PayingClientWallet(IMobileCodeClientWallet):
         if self.__connected[cookie]:
 
             result = await self.__getTransferProof(cookie, payToAccount, charges)
+            if cookie in self.__bankClients:
+                self.__bankClients[cookie].close()
+                del self.__bankClients[cookie]
             if result:
                 debugPrint("PayingClientWallet transfer receipt size:", len(result))
                 return result, "Received receipt from Bank"

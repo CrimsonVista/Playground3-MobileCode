@@ -7,7 +7,7 @@ import random, os
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 
-class IMobileCodeServerAuth:
+class AUTH_TRAITS:
     AUTHID_ATTRIBUTE = "Auth.Id"
     TIMEOUT_ATTRIBUTE = "Auth.Timeout"
     FLATRATE_ATTRIBUTE = "Auth.Flatrate"
@@ -15,6 +15,8 @@ class IMobileCodeServerAuth:
     CONNECTOR_ATTRIBUTE = "Auth.Connector"
     
     PAYTO_ACCOUNT_ATTRIBUTE = "Auth.PaytoAccount"
+
+class IMobileCodeServerAuth(AUTH_TRAITS):
     
     @classmethod
     def EncodeTrait(cls, key, value):
@@ -44,7 +46,7 @@ class IMobileCodeServerAuth:
     def getAuthorizedResult(self, cookie, rawOutput): raise NotImplementedError()
     def getCharges(self, cookie, runtime): raise NotImplementedError()
     
-class IMobileCodeClientAuth:
+class IMobileCodeClientAuth(AUTH_TRAITS):
     @classmethod
     def AttrListToDictionary(cls, attrs):
         return IMobileCodeServerAuth.AttrListToDictionary(attrs)
@@ -96,19 +98,33 @@ class NullServerAuth(IMobileCodeServerAuth):
         return 0
     
 class NullClientAuth(IMobileCodeClientAuth):
+    def __init__(self):
+        self._blacklist = set([])
+
+    # TODO: This API is temporary. It will go away some day
+    # We need blacklisting to be a function of overpayment in
+    # paying auths
+    def setBlacklist(self, payto_account, enable):
+        if enable:
+            self._blacklist.add(payto_account)
+        elif payto_account in self.blacklist:
+            self._blacklist.remove(payto_account)
+
+    def getBlacklist(self):
+        return list(self._blacklist)
+    
     def _checkCookie(self, clientCookie, sessionCookie):
         if clientCookie == (sessionCookie >> 32):
             return True
         return False
     
-    def _checkRate(self, negotiationAttributes):
-        attrs = self.AttrListToDictionary(negotiationAttributes)
-        if IMobileCodeServerAuth.FLATRATE_ATTRIBUTE in attrs: 
-            rate = attrs[IMobileCodeServerAuth.FLATRATE_ATTRIBUTE]
+    def _checkRate(self):
+        if IMobileCodeServerAuth.FLATRATE_ATTRIBUTE in self.session_attrs: 
+            rate = self.session_attrs[IMobileCodeServerAuth.FLATRATE_ATTRIBUTE]
             if int(rate) > 0:
                 return False 
-        if IMobileCodeServerAuth.HOURLYRATE_ATTRIBUTE in attrs:
-            rate = attrs[IMobileCodeServerAuth.HOURLYRATE_ATTRIBUTE]
+        if IMobileCodeServerAuth.HOURLYRATE_ATTRIBUTE in self.session_attrs:
+            rate = self.session_attrs[IMobileCodeServerAuth.HOURLYRATE_ATTRIBUTE]
             if int(rate) > 0:
                 return False
         return True
@@ -120,10 +136,14 @@ class NullClientAuth(IMobileCodeClientAuth):
         return random.randint(0, 2**32)
     
     def permit_SessionOpen(self, clientCookie, sessionCookie, serverAuthId, negotiationAttributes, serverEngineId, serverWalletId):
+        self.session_attrs = self.AttrListToDictionary(negotiationAttributes)
         if not self._checkCookie(clientCookie, sessionCookie):
             return False, "Cookie Mismatch"
-        if not self._checkRate(negotiationAttributes):
+        if not self._checkRate():
             return False, "Unacceptable Rate"
+        # TODO: Make a better API in the paying accounts that deals with the amounts paid, etc
+        if self.session_attrs.get(self.PAYTO_ACCOUNT_ATTRIBUTE, None) in self._blacklist:
+            return False, "Blacklisted account"
         return True, ""
         
     
@@ -144,7 +164,8 @@ class SimplePayingServerAuth(NullServerAuth):
         self.fee = flatfee
         self.traits[self.FLATRATE_ATTRIBUTE]=self.fee
         self.traits[self.PAYTO_ACCOUNT_ATTRIBUTE]=paytoaccount
-        
+
+
     def getAuthorizedResult(self, cookie, rawOutput):
         key = os.urandom(16)
         IV = os.urandom(16)
@@ -162,9 +183,15 @@ class SimplePayingServerAuth(NullServerAuth):
         return self.fee
 
 class SimplePayingClientAuth(NullClientAuth):
-    def _checkRate(self, negotiationAttributes):
+   
+    
+
+    def _checkRate(self):
+        # TODO: Set max rate
         return True
     
+    ### PAYING AUTH API ####
+
     def getFinalResult(self, cookie, prePaymentResult, authorization):
         key, IV = authorization[:16], authorization[16:]
         reader = Cipher(algorithms.AES(key), 

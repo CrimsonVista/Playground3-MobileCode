@@ -31,14 +31,12 @@ from playground.common import Timer, Minutes, Seconds
 import playground
 #from cryptography import x509
 from asyncio import get_event_loop, Protocol, Future
-import random, logging, sys, os, getpass, math, time, shutil, subprocess, asyncio
+import random, logging, sys, os, getpass, math, datetime, time, shutil, subprocess, asyncio
 import _pickle as cPickle
 from playground.asyncio_lib.SimpleCondition import SimpleCondition
 #from asyncio import Condition
 
 logger = logging.getLogger("playground.org,"+__name__)
-from playground.common.logging import EnablePresetLogging, PRESET_DEBUG
-EnablePresetLogging(PRESET_DEBUG)
 
 from cryptography.hazmat.backends import default_backend
 backend = default_backend()
@@ -115,32 +113,53 @@ def processCodeTemplate(s,replacements):
             s = s.replace(key, str(replacements[key]))
     return s
 
+# TODO: Some day make this account centric rather than
+# address centric
 class AddrPod(object):
+    
+    AccountErrorCount = {}
+
     def __init__(self, addr):
         self.addr = addr
         self.jobsSent = 0
         self.jobsCompleted = 0
         self.pathsCompleted = 0
         self.jobErrors = 0
-        self.paid = 0
+        self.paid = {}
         self.currentJob = None
         self.alive = True
         self.connector = "default"
+        # TODO: One day, move this to auth
+        now = datetime.datetime.now()
+        self.errorFile = "bad_payments_{}_{}_{}.txt".format(now.year, now.month, now.day)
         
     def assignJob(self, codeId):
         self.currentJob = codeId
         self.jobsSent += 1
         
-    def jobComplete(self, paths, cost):
+    def jobComplete(self, paths, payto, cost):
         self.currentJob = None
-        self.paid += cost
+        self.paid[payto] = self.paid.get(payto,0)+cost
         self.pathsCompleted += paths
         self.jobsCompleted += 1
         
-    def jobFailed(self, cost):
+    def jobFailed(self, payto, cost, reason):
         self.currentJob = None
-        self.paid += cost
+        if cost > 0:
+            self.recordBadPayment(payto, cost, reason)
+            self.paid[payto] = self.paid.get(payto,0)+cost
         self.jobErrors += 1
+
+    def totalPaid(self):
+        paid = 0
+        for account in self.paid:
+            paid += self.paid[account]
+        return paid
+
+    def recordBadPayment(self, account, amount, msg):
+        self.AccountErrorCount[account] = self.AccountErrorCount.get(account, 0) + amount
+        with open(self.errorFile,"a+") as f:
+            f.write("{}: {} paid {} for error.\n{}\n\n".format(time.time(), account, amount, msg))       
         
         
 class ParallelTSP:
@@ -186,7 +205,8 @@ class ParallelTSP:
         self.__maxRate = maxRate
         self.__serverAvailableCondition = SimpleCondition()
         self.__serversAvailable = []
-        
+
+ 
     def finished(self): 
         return self.__finished
     
@@ -267,8 +287,15 @@ class ParallelTSP:
         self.__addrData[addr].assignJob(codeId)
         return instructionStr, codeId
     
-    def pickleBack(self, codeId, future, cost):
-        codeOutput = future.result()
+    def pickleBack(self, codeId, future, session):
+        try:
+            codeOutput = future.result()
+        except Exception as e:
+            logger.debug("Mobile Code Client operation failed because {}".format(e))
+            addr = self.__parallelCodes[codeId][1]
+            self.__addrData[addr].jobFailed(None, 0, str(e))
+            return
+             
         
         logger.info("Received a result pickle with id %s" % (str(codeId),))
         if codeId  not in self.__parallelCodes:
@@ -292,11 +319,17 @@ class ParallelTSP:
             resultObj = Exception(codeOutput) # assume it is an exception
         
         if not isinstance(resultObj, Exception):
-            return self.codeCallback(codeId, resultObj, cost)
+            res = self.codeCallback(codeId, resultObj, session)
         else:
-            return self.codeErrback(codeId, resultObj, cost)
+            res =  self.codeErrback(codeId, resultObj, session)
+        if AddrPod.AccountErrorCount.get(session.paytoaccount, 0) > 5:
+            logger.debug("Blacklisting account {}".format(session.paytoaccount))
+            self.auth.setBlacklist(session.paytoaccount, True)
+        return res
     
-    def codeCallback(self, id, resultObj, cost):
+    def codeCallback(self, id, resultObj, session):
+        cost = session.charges
+        payto = session.paytoaccount
         logger.info("callback: %s" % str(resultObj))
         try:
             dist, path = resultObj
@@ -321,10 +354,10 @@ class ParallelTSP:
             self.__idsToPaths[id][2] = True
             start, end = self.__idsToPaths[id][0]
             self.__completedPaths += (end-start)+1
-            self.__addrData[addr].jobComplete((end-start)+1, cost)
+            self.__addrData[addr].jobComplete((end-start)+1, payto, cost)
             self.notifyNewServer(*addr)
         else:
-            self.__addrData[addr].jobFailed(cost)
+            self.__addrData[addr].jobFailed(payto, cost, "Bad verification. Returned falsified result")
         del self.__parallelCodes[id]
         if self.__shortest == None or dist < self.__shortest:
             self.__shortest = dist
@@ -337,12 +370,14 @@ class ParallelTSP:
         else:
             return False, "Failed verification."
             
-    def codeErrback(self, id, exceptionObj, cost):
+    def codeErrback(self, id, exceptionObj, session):
         logger.info("exception back: %s" % str(exceptionObj))
+        cost = session.charges
+        payto = session.paytoaccount
         if id not in self.__parallelCodes:
             return False, "Unknown id %d" % id
         addr = self.__parallelCodes[id][1]
-        self.__addrData[addr].jobFailed(cost)
+        self.__addrData[addr].jobFailed(payto, cost, str(exceptionObj))
         logger.debug("Resubmitting code id {} for execution.".format(id))
         self.__resubmit.append((self.__parallelCodes[id][0], id))
         self.__idsToPaths[1] = "<Needs Reassignment>"
@@ -382,7 +417,7 @@ class ParallelTSP:
 
         # python does not have real closures. we have to do this ugly thing
         # to make the labmdas work in the callback
-        closure = lambda c_codeId, c_oneShotClient: lambda future: self.pickleBack(c_codeId, future, c_oneShotClient.charges)
+        closure = lambda c_codeId, c_oneShotClient: lambda future: self.pickleBack(c_codeId, future, c_oneShotClient)
 
         while not self.finished():
             nextServer = None
@@ -537,7 +572,9 @@ class ParallelTSPCLI(CLIShell):
             for addrData in self.ptsp.iterAddrStats():
                 addrStr += "\t\t%-15s\t%-10s\t%-10s\t%s\t%s\n" % (addrData.addr, addrData.jobsSent, 
                                                                   addrData.jobsCompleted, addrData.jobErrors, 
-                                                                  addrData.paid)  
+                                                                  addrData.totalPaid())
+                for payto in addrData.paid:
+                    addrStr += "\t\t%-15s\t%-10s\t%-10s\t%-10s\t%s\n" % (" ", " ", " ", " ", "{}: {}".format(payto, addrData.paid[payto]))  
             
             templateData["Current_Execution_Details"] = currStr
             templateData["Addr_Stats"] = addrStr
@@ -597,8 +634,8 @@ def main():
     loop.set_debug(enabled=True)
     ptspArgs = {}
     
-    from playground.common.logging import EnablePresetLogging, PRESET_DEBUG
-    #EnablePresetLogging(PRESET_DEBUG)
+    from playground.common.logging import EnablePresetLogging, PRESET_VERBOSE, PRESET_DEBUG
+    EnablePresetLogging(PRESET_VERBOSE)
         
     args= sys.argv[1:]
     i = 0
