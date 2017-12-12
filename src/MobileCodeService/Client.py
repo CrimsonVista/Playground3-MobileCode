@@ -149,7 +149,7 @@ class StatelessClient(Protocol):
         self.wallet = wallet
         
     def connection_made(self, transport):
-        logger.debug("Mobile Code Client connected. State is {}".format(self.session.state))
+        logger.debug("Mobile Code Client connected to {}. State is {}".format(transport.get_extra_info("peername"), self.session.state))
         self.transport = transport
         if self.session.state == self.STATE_START:
             return self.sendOpenSession()
@@ -286,6 +286,7 @@ class StatelessClient(Protocol):
     def data_received(self, data):
         self.deserializer.update(data)
         for pkt in self.deserializer.nextPackets():
+            logger.debug("Deserialized {} from {}".format(pkt, self.transport.get_extra_info("peername")))
             if isinstance(pkt, MobileCodeFailure):
                 return self._handleFailure(pkt)
             

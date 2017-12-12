@@ -239,6 +239,7 @@ class ParallelTSP:
         while self.__resubmit:
             codeStr, codeId = self.__resubmit.pop()
             if codeId not in self.__parallelCodes: continue
+            logger.debug("Assigning code id  {} to address {}".format(codeId, addr))
             self.__parallelCodes[codeId][1] = addr
             self.__idsToPaths[codeId][1] = addr
             self.__addrData[addr].assignJob(codeId)
@@ -254,6 +255,7 @@ class ParallelTSP:
         instructionStr = self.getCodeString(start, end)
         #instruction = playground.network.common.DefaultPlaygroundMobileCodeUnit(codeStr)
         codeId = random.randint(0,(2**64)-1)
+        logger.debug("Assigning code ID {} to address {}".format(codeId, addr))
         self.__parallelCodes[codeId] = [instructionStr, addr]
         self.__idsToPaths[codeId] = [(start,end), addr, False]
         logger.info("CodeStr Len: %d" % len(instructionStr))
@@ -339,6 +341,7 @@ class ParallelTSP:
             return False, "Unknown id %d" % id
         addr = self.__parallelCodes[id][1]
         self.__addrData[addr].jobFailed(cost)
+        logger.debug("Resubmitting code id {} for execution.".format(id))
         self.__resubmit.append((self.__parallelCodes[id][0], id))
         self.__idsToPaths[1] = "<Needs Reassignment>"
         return False, "There shouldn't be exceptions"
@@ -374,6 +377,11 @@ class ParallelTSP:
     async def start(self):
         self.updateAvailableServers()
         self.tracker.registerListener(self.notifyNewServer)
+
+        # python does not have real closures. we have to do this ugly thing
+        # to make the labmdas work in the callback
+        closure = lambda c_codeId, c_oneShotClient: lambda future: self.pickleBack(c_codeId, future, c_oneShotClient.charges)
+
         while not self.finished():
             nextServer = None
             while len(self.__serversAvailable) == 0:
@@ -393,7 +401,7 @@ class ParallelTSP:
                                                  self.auth,  self.wallet)
                 # MobileCodeClient(connector, address, port, mobileCode, auth, wallet)
                 result = oneShotClient.run()
-                result.add_done_callback(lambda future: self.pickleBack(codeId, future, oneShotClient.charges))
+                result.add_done_callback(closure(codeId, oneShotClient))
             
 
 class ParallelTSPCLI(CLIShell):
@@ -616,7 +624,7 @@ def main():
                                 bankAddress, bankPort)
 
     clientAuth = SimplePayingClientAuth()
-    PTSP = ParallelTSP(tracker, clientAuth, wallet, n=5)        
+    PTSP = ParallelTSP(tracker, clientAuth, wallet, n=50)        
     def initShell():
         uiFactory = ParallelTSPCLI(PTSP)
         uiFactory.registerExitListener(lambda reason: loop.call_later(2.0, loop.stop))

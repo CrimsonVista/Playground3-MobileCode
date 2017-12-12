@@ -42,6 +42,7 @@ if __name__=="__main__":
     serverWallet = PayingServerWallet(bankcert, paytoAccount)
     serverEngine = DefaultMobileCodeEngine()
     serverAuth = SimplePayingServerAuth(paytoAccount, 5) # hardcoded 5 bitpoints per job
+    serverAuth.traits[serverAuth.CONNECTOR_ATTRIBUTE]=stack
     serverFactory = lambda: MobileCodeServer(serverWallet, serverAuth, serverEngine)
 
     coro = playground.getConnector(stack).create_playground_server(serverFactory, port)
