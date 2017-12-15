@@ -142,7 +142,8 @@ class PayingClientWallet(IMobileCodeClientWallet):
         # Immediately connect to the bank (Should we wait for something instead?)
         debugPrint("In __connect")
         coro = playground.getConnector(self.__connector).create_playground_connection(self.__bankFactory, self.__bankAddr, self.__bankPort)
-        fut = asyncio.run_coroutine_threadsafe(coro, self.__asyncLoop)
+        #fut = asyncio.run_coroutine_threadsafe(coro, self.__asyncLoop)
+        fut = asyncio.get_event_loop().create_task(coro)
         fut.add_done_callback(partial(self.__handleClientConnection, cookie=cookie))
         debugPrint("PayingClientWallet initialized!")
 
@@ -165,7 +166,7 @@ class PayingClientWallet(IMobileCodeClientWallet):
             self.__bankClients[cookie] = protocol
             # self.__bankClient.setLocalErrorHandler(self)
             self.__d = self.__bankClients[cookie].waitForConnection() # self.__bankClient.loginToServer()
-            self.__bankClients[cookie].waitForTermination().addCallback(lambda *args: self.quit())
+            self.__bankClients[cookie].waitForTermination().addCallback(lambda *args: self.clearCookie(cookie))
             self.__d.addCallback(partial(self.__loginToServer,cookie=cookie))
             self.__d.addErrback(partial(self.__noLogin, cookie=cookie))
             debugPrint("Paying Client Wallet: Logging in to bank. Waiting for server\n")
@@ -200,6 +201,11 @@ class PayingClientWallet(IMobileCodeClientWallet):
         self.__bankClients[cookie].close()
         return Exception(e)
 
+    def clearCookie(self, cookie):
+        if cookie in self.__bankClients:
+            self.__bankClients[cookie].close()
+            del self.__bankClients[cookie]
+
     async def getPayment(self, cookie, payToAccount, charges):
         debugPrint("PayingClientWallet called get payment with cookie=", cookie, "charges=", charges)
 
@@ -212,9 +218,7 @@ class PayingClientWallet(IMobileCodeClientWallet):
         if self.__connected[cookie]:
 
             result = await self.__getTransferProof(cookie, payToAccount, charges)
-            if cookie in self.__bankClients:
-                self.__bankClients[cookie].close()
-                del self.__bankClients[cookie]
+            self.clearCookie(cookie)
             if result:
                 debugPrint("PayingClientWallet transfer receipt size:", len(result))
                 return result, "Received receipt from Bank"
@@ -223,6 +227,7 @@ class PayingClientWallet(IMobileCodeClientWallet):
                 return None, "Error on trying to transfer money"
         else:
             debugPrint("PayingClientWallet is not connected to the bank?")
+            self.clearCookie(cookie)
             return None, "Paying client wallet is not connected to the bank"
     
     async def __getTransferProof(self, cookie, payToAccount, charges):

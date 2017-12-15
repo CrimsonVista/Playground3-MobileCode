@@ -28,8 +28,10 @@ class MobileCodeServerTracker:
             
         def connection_made(self, transport):
             self.transport = transport
-            transport.write(MobileCodeServiceDiscovery().__serialize__())
-            get_event_loop().call_later(20.0, self.close)
+            self.send()
+
+        def send(self):
+            self.transport.write(MobileCodeServiceDiscovery().__serialize__())
             
         def connection_lost(self, reason=None):
             self.transport=None
@@ -45,15 +47,16 @@ class MobileCodeServerTracker:
                 pkts = list(d.nextPackets())
             except:
                 pkts = []
-            if not pkts: return
-            packet = pkts[0]
-            self.notify(packet.Address, packet.Port, packet.Traits)
+            if pkts:
+                packet = pkts[0]
+                self.notify(packet.Address, packet.Port, packet.Traits)
             
     def __init__(self):
         # TODO: shutdown?
         self.serverDb = {}
         self._listeners = set([])
         self._scan = False
+        self._pinger = None
         
     def registerListener(self, l):
         self._listeners.add(l)
@@ -61,18 +64,26 @@ class MobileCodeServerTracker:
     def unregisterListener(self, l):
         if l in self._listeners:
             self._listeners.remove(l)
+
+    def close(self):
+        self._pinger and self._pinger.close()
+        self._pinger = None
         
     def sendPing(self):
-        coro = playground.getConnector().create_playground_connection(lambda: self.PingProtocol(self.receivePong), 
+        if self._pinger == None:
+            self._pinger = self.PingProtocol(self.receivePong)
+            coro = playground.getConnector().create_playground_connection(lambda: self._pinger,
                                                                "0.0.0.0", 60000)
-        get_event_loop().create_task(coro)
+            get_event_loop().create_task(coro)
+        else:
+            self._pinger.send()
         if self._scan:
-            get_event_loop().call_later(5, self.sendPing)
+            get_event_loop().call_later(25, self.sendPing)
         
     def receivePong(self, address, port, traits):
         self.serverDb[(address, port)] = [time.time(), traits]
         for listener in self._listeners:
-            listener(address, port)
+            get_event_loop().call_soon(listener, address, port)
             
     def stopScan(self):
         self._scan = False
@@ -149,7 +160,7 @@ class StatelessClient(Protocol):
         self.wallet = wallet
         
     def connection_made(self, transport):
-        logger.debug("Mobile Code Client connected to {}. State is {}".format(transport.get_extra_info("peername"), self.session.state))
+        logger.debug("Mobile Code Client connected to {} (spawn port is {}). State is {}".format(transport.get_extra_info("peername"), transport.get_extra_info("spawnport"), self.session.state))
         self.transport = transport
         if self.session.state == self.STATE_START:
             return self.sendOpenSession()
@@ -163,7 +174,12 @@ class StatelessClient(Protocol):
             return self.sendPaymentRequest()
         else:
             raise Exception("Unknown state {}".format(self.session.state))
-            
+
+    def connection_lost(self, reason=None):
+        if self.transport:
+            logger.debug("Mobile Code Client disconnected from {}".format(self.transport.get_extra_info("peername")))
+            self.transport = None        
+    
     def sendOpenSession(self):
         self.session.cookie = self.auth.createCookie()
         request = OpenSession(Cookie=self.session.cookie)
@@ -286,22 +302,25 @@ class StatelessClient(Protocol):
     def data_received(self, data):
         self.deserializer.update(data)
         for pkt in self.deserializer.nextPackets():
-            logger.debug("Deserialized {} from {}".format(pkt, self.transport.get_extra_info("peername")))
+            logger.debug("Deserialized {} from {} (spawn port {})".format(pkt, self.transport.get_extra_info("peername"), self.transport.get_extra_info("spawnport")))
             if isinstance(pkt, MobileCodeFailure):
-                return self._handleFailure(pkt)
+                self._handleFailure(pkt)
             
             elif self.session.state == self.STATE_START:
-                return self.handleOpenSession(pkt)
+                self.handleOpenSession(pkt)
             elif self.session.state == self.STATE_OPEN:
-                return self.handleMobileCode(pkt)
+                self.handleMobileCode(pkt)
             elif self.session.state == self.STATE_RUNNING:
-                return self.handleStatusRequest(pkt)
+                self.handleStatusRequest(pkt)
             elif self.session.state == self.STATE_FINISHED:
-                return self.handleResultRequest(pkt)
+                self.handleResultRequest(pkt)
             elif self.session.state == self.STATE_PAYMENT:
-                return self.handlePaymentRequest(pkt)
+                self.handlePaymentRequest(pkt)
             else:
                 raise Exception("Unknown state {}".format(self.session.state))
+            # There should only ever be one packet
+            self.transport.close()
+            return
                 
             
     def _handleFailure(self, failure):

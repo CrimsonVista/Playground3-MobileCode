@@ -387,11 +387,14 @@ class ParallelTSP:
     def updateAvailableServers(self):
         validTime = 120.0
         servers = []
+        logger.debug("Checking {} new servers".format(len(self.tracker.serverDb)))
         for serverKey in self.tracker.serverDb:
             lastSeen, traits = self.tracker.serverDb[serverKey]
+            logger.debug("Checking {} last seen {}".format(serverKey, lastSeen))
             if serverKey not in self.__addrData:
                 self.__addrData[serverKey] = AddrPod(serverKey)
             for traitString in traits:
+                logger.debug("trait={}".format(traitString))
                 if "=" in traitString:
                     k, v = traitString.split("=")
                     if k.strip() == IMobileCodeServerAuth.CONNECTOR_ATTRIBUTE:
@@ -429,6 +432,11 @@ class ParallelTSP:
             # check the connector for the mobile code server
             connector = self.__addrData[nextServer].connector
             if not connector: continue
+            try:
+               playground.getConnector(connector)
+            except:
+               logger.debug("No such connector {}".format(connector))
+               continue 
             
             #Get the code to run
             mobileCode, codeId = self.getNextCodeUnit(nextServer)
