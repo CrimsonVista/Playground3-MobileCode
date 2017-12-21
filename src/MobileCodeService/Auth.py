@@ -183,10 +183,18 @@ class SimplePayingServerAuth(NullServerAuth):
         return self.fee
 
 class SimplePayingClientAuth(NullClientAuth):
-   
+    MAX_RATE = 10 
     
 
     def _checkRate(self):
+        if IMobileCodeServerAuth.FLATRATE_ATTRIBUTE in self.session_attrs: 
+            rate = self.session_attrs[IMobileCodeServerAuth.FLATRATE_ATTRIBUTE]
+            if int(rate) > self.MAX_RATE:
+                return False 
+        if IMobileCodeServerAuth.HOURLYRATE_ATTRIBUTE in self.session_attrs:
+            rate = self.session_attrs[IMobileCodeServerAuth.HOURLYRATE_ATTRIBUTE]
+            if int(rate) > self.MAX_RATE:
+                return False
         # TODO: Set max rate
         return True
     
@@ -199,6 +207,11 @@ class SimplePayingClientAuth(NullClientAuth):
                              backend=default_backend()).decryptor()
         plaintext = reader.update(prePaymentResult)
         return plaintext
+    
+    def permit_result(self, cookie, result, charges):
+        if charges > self.MAX_RATE: # TODO, deal with hourly charges
+            return False, "Charge exceeds limit"
+        return True, ""
     
 class SimpleRatePayingServerAuth(SimplePayingServerAuth):
     def __init__(self, hourlyRate, paytoaccount):

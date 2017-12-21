@@ -253,15 +253,17 @@ class ParallelTSP:
         otherwise create a new job
         """
         if addr not in self.__addrData:
+            logger.debug("No code for {} because not yet in addr data".format(addr))
             return None, None # not yet processed.
             
         if self.__addrData[addr].currentJob != None or not self.__addrData[addr].alive:
+            logger.debug("No code for {} because current job is either not none ({}), or not alive ({})".format(addr, self.__addrData[addr].currentJob, self.__addrData[addr].alive))
             return None, None
         
         while self.__resubmit:
             codeStr, codeId = self.__resubmit.pop()
             if codeId not in self.__parallelCodes: continue
-            logger.debug("Assigning code id  {} to address {}".format(codeId, addr))
+            logger.debug("Re-Assigning code id  {} to address {}".format(codeId, addr))
             self.__parallelCodes[codeId][1] = addr
             self.__idsToPaths[codeId][1] = addr
             self.__addrData[addr].assignJob(codeId)
@@ -286,14 +288,22 @@ class ParallelTSP:
         self.__curPath = end+1
         self.__addrData[addr].assignJob(codeId)
         return instructionStr, codeId
-    
+
+    def jobFailed(self, codeId, addr, account, cost, reason):
+        self.__addrData[addr].jobFailed(account, cost, reason)
+        instruction_string, addr_duplicate = self.__parallelCodes[codeId]
+        del self.__parallelCodes[codeId]
+        del self.__idsToPaths[codeId]
+        logger.debug("Resubmitting failed code id {} for execution.".format(codeId))
+        self.__resubmit.append((instruction_string, codeId))
+ 
     def pickleBack(self, codeId, future, session):
         try:
             codeOutput = future.result()
         except Exception as e:
             logger.debug("Mobile Code Client operation failed because {}".format(e))
             addr = self.__parallelCodes[codeId][1]
-            self.__addrData[addr].jobFailed(None, 0, str(e))
+            self.jobFailed(codeId, addr, None, 0, str(e))
             return
              
         
@@ -328,6 +338,7 @@ class ParallelTSP:
         return res
     
     def codeCallback(self, id, resultObj, session):
+        addr = self.__parallelCodes[id][1]
         cost = session.charges
         payto = session.paytoaccount
         logger.info("callback: %s" % str(resultObj))
@@ -338,7 +349,6 @@ class ParallelTSP:
         if type(dist) != int or type(path) != list:
             return False, "Invalid result, Expected int, list"
         verifiedOK = True
-        addr = self.__parallelCodes[id][1]
         
         if id in self.__checkIds:
             logger.info("Validating ID %d" % id)
@@ -355,10 +365,10 @@ class ParallelTSP:
             start, end = self.__idsToPaths[id][0]
             self.__completedPaths += (end-start)+1
             self.__addrData[addr].jobComplete((end-start)+1, payto, cost)
+            del self.__parallelCodes[id]
             self.notifyNewServer(*addr)
         else:
-            self.__addrData[addr].jobFailed(payto, cost, "Bad verification. Returned falsified result")
-        del self.__parallelCodes[id]
+            self.jobFailed(id, addr, payto, cost, "Bad verification. Returned falsified result")
         if self.__shortest == None or dist < self.__shortest:
             self.__shortest = dist
             self.__bestPath = path
@@ -371,16 +381,14 @@ class ParallelTSP:
             return False, "Failed verification."
             
     def codeErrback(self, id, exceptionObj, session):
+        if id not in self.__parallelCodes:
+            return False, "Unknown id %d" % id
+        instruction_string, addr = self.__parallelCodes[id]
+
         logger.info("exception back: %s" % str(exceptionObj))
         cost = session.charges
         payto = session.paytoaccount
-        if id not in self.__parallelCodes:
-            return False, "Unknown id %d" % id
-        addr = self.__parallelCodes[id][1]
-        self.__addrData[addr].jobFailed(payto, cost, str(exceptionObj))
-        logger.debug("Resubmitting code id {} for execution.".format(id))
-        self.__resubmit.append((self.__parallelCodes[id][0], id))
-        self.__idsToPaths[1] = "<Needs Reassignment>"
+        self.jobFailed(id, addr, payto, cost, str(exceptionObj))
         return False, "There shouldn't be exceptions"
         
     
@@ -400,14 +408,18 @@ class ParallelTSP:
                     if k.strip() == IMobileCodeServerAuth.CONNECTOR_ATTRIBUTE:
                         self.__addrData[serverKey].connector = v.strip()
             if time.time() - lastSeen > validTime:
+                logger.debug("Server {} is dead. Not seen in a while".format(serverKey))
                 self.__addrData[serverKey].alive = False
                 continue
             if serverKey in self.__addrData and self.__addrData[serverKey].currentJob != None:
+                logger.debug("Server {} is busy with another job".format(serverKey))
                 continue
             if not self.auth.permit_Connector(self.__addrData[serverKey].connector):
+                logger.debug("Server {} has invalid connector".format(serverKey))
                 self.__addrData[serverKey].connector = None
                 continue
             servers.append(serverKey)
+            self.__addrData[serverKey].alive = True
         self.__serversAvailable = servers
         self.__serverAvailableCondition.notify()
     
@@ -447,6 +459,8 @@ class ParallelTSP:
                 # MobileCodeClient(connector, address, port, mobileCode, auth, wallet)
                 result = oneShotClient.run()
                 result.add_done_callback(closure(codeId, oneShotClient))
+            else:
+                logger.debug("Mobile code null for server {}".format(nextServer))
             
 
 class ParallelTSPCLI(CLIShell):
@@ -642,8 +656,10 @@ def main():
     loop.set_debug(enabled=True)
     ptspArgs = {}
     
-    from playground.common.logging import EnablePresetLogging, PRESET_VERBOSE, PRESET_DEBUG
-    EnablePresetLogging(PRESET_VERBOSE)
+    #from playground.common.logging import EnablePresetLogging, PRESET_VERBOSE, PRESET_DEBUG
+    #EnablePresetLogging(PRESET_VERBOSE)
+    import OnlineBank
+    OnlineBank.DEBUG = 0
         
     args= sys.argv[1:]
     i = 0

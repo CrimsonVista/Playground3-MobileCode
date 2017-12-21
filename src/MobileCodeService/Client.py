@@ -136,7 +136,7 @@ class MobileCodeClient:
             #server = loop.run_until_complete(coro)
         
     def run(self):
-        logging.debug("Mobile Code Client starting")
+        logging.debug("Mobile Code Client starting to {}:{}".format(self.address, self.port))
         self.transition(StatelessClient.STATE_START)
         return self.resultFuture
 
@@ -158,10 +158,16 @@ class StatelessClient(Protocol):
         
         self.auth = auth
         self.wallet = wallet
+
+    def timeout(self):
+        if not self.transport: return
+        self.transport.close()
+        self.session.failed(Exception("Server timedout in connection to {}".format(self.transport.get_extra_info("peername"))))
         
     def connection_made(self, transport):
-        logger.debug("Mobile Code Client connected to {} (spawn port is {}). State is {}".format(transport.get_extra_info("peername"), transport.get_extra_info("spawnport"), self.session.state))
+        logger.debug("Mobile Code Client (cookie={}) connected to {} (spawn port is {}). State is {}".format(self.session.cookie, transport.get_extra_info("peername"), transport.get_extra_info("spawnport"), self.session.state))
         self.transport = transport
+        get_event_loop().call_later(30.0, self.timeout)
         if self.session.state == self.STATE_START:
             return self.sendOpenSession()
         elif self.session.state == self.STATE_OPEN:
@@ -177,7 +183,7 @@ class StatelessClient(Protocol):
 
     def connection_lost(self, reason=None):
         if self.transport:
-            logger.debug("Mobile Code Client disconnected from {}".format(self.transport.get_extra_info("peername")))
+            logger.debug("Mobile Code Client (cookie={}) disconnected from {}".format(self.session.cookie, self.transport.get_extra_info("peername")))
             self.transport = None        
     
     def sendOpenSession(self):
@@ -199,15 +205,15 @@ class StatelessClient(Protocol):
                                                           serverEngineId, serverWalletId)
         
         self._serverAttributes = self.auth.AttrListToDictionary(negotiationAttributes)
-        print("Got negotiation attributes", [str(x) for x in negotiationAttributes])
-        print(self._serverAttributes)
+        #print("Got negotiation attributes", [str(x) for x in negotiationAttributes])
+        #print(self._serverAttributes)
         logger.debug(negotiationAttributes)
         logger.debug("*******************")
         self.session.paytoaccount = self._serverAttributes.get(NullServerAuth.PAYTO_ACCOUNT_ATTRIBUTE, None)
         
         
         if not permitted:
-            print("NOT PERMITTED!!!")
+            #print("NOT PERMITTED!!!")
             self.session.failed(reason)
         else:
             self.session.cookie = updatedCookie
@@ -238,10 +244,10 @@ class StatelessClient(Protocol):
         self.session.runtime = response.Runtime
         
         if complete:
-            logger.debug("Code is complete. runtime is {}".format(self.session.runtime))
+            logger.debug("Code (cookie={}) is complete. runtime is {}".format(self.session.cookie, self.session.runtime))
             self.session.transition(self.STATE_FINISHED)
         else:
-            logger.debug("Code is not complete. runtime is {}".format(self.session.runtime))
+            logger.debug("Code (cookie={}) is not complete. runtime is {}".format(self.session.cookie, self.session.runtime))
             get_event_loop().call_later(3.0, self.session.transition, self.STATE_RUNNING)
         
     def sendResultRequest(self):
@@ -302,7 +308,7 @@ class StatelessClient(Protocol):
     def data_received(self, data):
         self.deserializer.update(data)
         for pkt in self.deserializer.nextPackets():
-            logger.debug("Deserialized {} from {} (spawn port {})".format(pkt, self.transport.get_extra_info("peername"), self.transport.get_extra_info("spawnport")))
+            logger.debug("MCC (cookie={}) Deserialized {} from {} (spawn port {})".format(self.session.cookie, pkt, self.transport.get_extra_info("peername"), self.transport.get_extra_info("spawnport")))
             if isinstance(pkt, MobileCodeFailure):
                 self._handleFailure(pkt)
             
@@ -332,5 +338,5 @@ class StatelessClient(Protocol):
             errorMessage = failure.ErrorMessage
         logger.debug("Mobile Code Execution Failed: {}".format(errorMessage))
         # TODO later. Handle different failures differently
-        print("NOT HANDLING!!!")
+        #print("NOT HANDLING!!!")
         self.session.failed(errorMessage)     
